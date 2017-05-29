@@ -1,9 +1,11 @@
 #lang racket
 
-(provide (all-defined-out))
+(provide md5)
 
 
-;;utility
+;;helper function
+;;used to split the message into 64 bytes chunks
+;;and to split each chunk into sixteen 4 bytes word
 (define (bytes-split bytes size)
   (define len (bytes-length bytes))
   (unless (= 0 (modulo len size))
@@ -14,6 +16,11 @@
 
 
 ;;PRE PROCESSING
+;;at the end of the pre process the message will have
+;;1) the original data
+;;2) the bit 1
+;;3) zeroes until the message length is congruent to 512 modulo 448
+;;4) the original length in bits (64 bits integer)
 (define (pre-process data)
   (define original-length (* (bytes-length data) 8))
 
@@ -34,22 +41,17 @@
    original-length))
 
 ;;CONSTANTS DEFINITION
-(define s (list 7 12 17 22  7 12 17 22  7 12 17
-                22  7 12 17 22 5  9 14 20  5  9
-                14 20  5  9 14 20  5  9 14 20 4
-                11 16 23  4 11 16 23  4 11 16 23
-                4 11 16 23 6 10 15 21  6 10 15
-                21  6 10 15 21  6 10 15 21))
+(define s (list 7 12 17 22  7 12 17 22  7 12 17 22  7 12 17 22
+                5  9 14 20  5  9 14 20  5  9 14 20  5  9 14 20
+                4 11 16 23  4 11 16 23  4 11 16 23  4 11 16 23
+                6 10 15 21  6 10 15 21  6 10 15 21  6 10 15 21))
 
 (define K (map (λ (x) (inexact->exact x))
                (for/list ([i (in-range 0 64)])
-                 (floor (*
-                         (expt 2 32)
-                         (abs (sin (add1 i))))))))
+                 (floor (* (expt 2 32) (abs (sin (add1 i))))))))
 
 ;;WORD-BITWISE OPERATIONS DEFINITION
-#| A word is an unsigned 32 bits integer
- |#
+;; A word is an unsigned 32 bits integer
 
 (define (word-limit w)
   ;;limit the given number to a 32bits unsigned integer
@@ -60,8 +62,8 @@
 
 
 (define (leftrotate x c)
+  ;https://en.wikipedia.org/wiki/Circular_shift
   (set! x (word-limit x))
-  ;(printf "l-in:~a\n" x)
   (word-limit (bitwise-ior
                (arithmetic-shift x c)
                (arithmetic-shift x (* -1 (- 32 c))))))
@@ -69,40 +71,38 @@
 
 ;;MD5 IMPLEMENTATION
 (define (md5 data)
-  (define message (pre-process
-                   (cond
-                     [(bytes? data) data]
-                     [(string? data) (string->bytes/utf-8 data)]
-                     [else (raise-type-error
-                            'md5 "string or bytes" data)])))
+  (define message
+    (pre-process
+     (cond ;;checks the type of the given data
+       [(bytes? data) data]
+       [(string? data) (string->bytes/utf-8 data)]
+       [else (raise-type-error
+              'md5 "string or bytes" data)])))
+
   
-  ;(printf "message:~a\n" message)
-  (define-values (fa fb fc fd)
+  (define-values (fa fb fc fd) ;;fa means final-A and so on
     (for/fold
+     ;;define initial variables with constants
      ([a0 #x67452301]
       [b0 #xefcdab89]
       [c0 #x98badcfe]
       [d0 #x10325476])
+     
+     ;;split the message into chunks of 512bits
      ([chunk (bytes-split message 64)])
-      ;;split into chunks of 512bits
-      ;(println chunk)
-      (define M
-        (for/list ([x (bytes-split chunk 4)])
-          ;;split each chunk into sixteen words of 32bits
-          ;;save them into M as integers
-          (integer-bytes->integer x #f #f)))
-      ;(printf "M:~a\n" M)
+      ;;split each chunk into sixteen words of 32bits
+      ;;save them into M as integers
+      (define M (for/list ([x (bytes-split chunk 4)])
+                  (integer-bytes->integer x #f #f)))
 
       ;;redefine for each chunk
       (define A a0)
       (define B b0)
       (define C c0)
       (define D d0)
-      ;(printf "this-b:~a\n" B)
 
       ;;main loop
-      (for ([i (in-range 0 64)])
-        ;(printf "i:~a\n" i)
+      (for ([i (in-range 64)])
         (define-values (F g)
           (cond
             [(<= 0 i 15)
@@ -127,26 +127,14 @@
               )]
             [else (error "main loop index error")]))
 
+        ;;update variables for this iteration of the main loop
         (define dTemp D)
         (set! D C)
         (set! C B)
-        (define sumTemp
-          (+ A F (list-ref K i) (list-ref M g)))
-        ;(printf "this-M:~a\n" (list-ref M g))
-        ;(printf "this-A:~a\n" A)
-        ;(printf "this-F:~a\n" F)
-        ;(printf "this-K:~a\n" (list-ref K i))
-        ;(printf "A+F:~a\n" (+ A F))
-        ;(printf "F+K:~a\n" (+ F (list-ref K i)))
-        ;(printf "A+F+K:~a\n" (+ A F (list-ref K i)))
-        ;(printf "sumTemp:~a\n" sumTemp)
+        (define sumTemp (+ A F (list-ref K i) (list-ref M g)))
         (define rotated (leftrotate sumTemp (list-ref s i)))
-        ;(printf "rotated:~a\n" rotated)
         (set! B (word+ B rotated))
-        ;(printf "new-B:~a\n" B)
-        (set! A dTemp)
-        ;(printf "A:~a\nB:~a\nC:~a\nD:~a\n" A B C D))
-        )
+        (set! A dTemp))
       ;;main loop ended
 
       ;;adding this chunk's hash to result
@@ -154,9 +142,9 @@
       (set! b0 (word+ b0 B))
       (set! c0 (word+ c0 C))
       (set! d0 (word+ d0 D))
-      ;(printf "a:~a\nb:~a\nc:~a\nd:~a\n" a0 b0 c0 d0)
       (values a0 b0 c0 d0)))
-  
+
+  ;;generation of the digest in a hex string
   (define all-bytes
     (bytes-append
      (integer->integer-bytes fa 4 #f #f)
@@ -164,6 +152,35 @@
      (integer->integer-bytes fc 4 #f #f)
      (integer->integer-bytes fd 4 #f #f)))
   (apply string-append
-   (for/list ([b all-bytes])
-     (~a #:width 2 #:pad-string "0" #:align 'right
-         (number->string b 16)))))
+         (for/list ([b all-bytes])
+           (~a #:width 2 #:pad-string "0" #:align 'right
+               (number->string b 16)))))
+
+
+
+#| UNIT TESTS |#
+(require rackunit)
+
+;;leftrotate tests
+(check-equal?
+ (leftrotate #b10011111000000001111111101010101 8)
+ 16733599
+ "leftrotate")
+(check-equal?
+ (leftrotate #b10000000000000000000000000000001 2)
+ 6
+ "leftrotate")
+
+;;md5 tests
+(check-equal?
+ (md5 "")
+ "d41d8cd98f00b204e9800998ecf8427e"
+ "md5 of \"\"")
+(check-equal?
+ (md5 "The quick brown fox jumps over the lazy dog")
+ "9e107d9d372bb6826bd81d3542a419d6"
+ "md5 of \"The quick brown fox jumps over the lazy dog\"")
+(check-equal?
+ (md5 "The quick brown fox jumps over the lazy dog.")
+ "e4d909c290d0fb1ca068ffaddf22cbd0"
+ "md5 of \"The quick brown fox jumps over the lazy dog.\"")
